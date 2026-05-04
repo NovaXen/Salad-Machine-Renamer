@@ -11,6 +11,19 @@ let viewMode = "earnings"; // Default to earnings view
 let earningsHistoryCache = {};
 let lifetimeEarningsCache = {};
 let toggleButtonObserver = null;
+let _machineUpdateTimer = null;
+
+function scheduleMachineUpdate() {
+  if (_machineUpdateTimer) clearTimeout(_machineUpdateTimer);
+  _machineUpdateTimer = setTimeout(() => {
+    _machineUpdateTimer = null;
+    if (!gpuDemandData) {
+      fetchGpuDemandData().then(() => fetchMachineApiData().then(() => updateMachineElements())).catch(console.error);
+    } else {
+      fetchMachineApiData().then(() => updateMachineElements()).catch(console.error);
+    }
+  }, 150);
+}
 
 // Table sorting state
 let currentSort = { column: null, direction: "asc" };
@@ -517,6 +530,10 @@ function downloadEarningsDataFromPage(machineSelection, timeframe) {
 }
 
 function downloadAggregateEarningsData(timeframe) {
+  if (!machineApiData || machineApiData.length === 0) {
+    alert("Machine data not yet loaded. Please wait a moment and try again.");
+    return;
+  }
   // Fetch earnings data for all active machines (last 31 days) and aggregate by summing matching dates
   const now = new Date();
   const thirtyOneDaysAgo = new Date(now.getTime() - 31 * 24 * 60 * 60 * 1000);
@@ -824,10 +841,38 @@ function addViewToggleButton() {
     openCSVExportModal();
   };
 
+  // Salad Tools link button
+  const saladToolsBtn = document.createElement("a");
+  saladToolsBtn.textContent = "📊 GPU Demand & Earnings";
+  saladToolsBtn.href = "https://salad-tools.novatech.gg/";
+  saladToolsBtn.target = "_blank";
+  saladToolsBtn.rel = "noopener noreferrer";
+  saladToolsBtn.style.border = "none";
+  saladToolsBtn.style.padding = "8px 16px";
+  saladToolsBtn.style.fontFamily = "Mallory, sans-serif";
+  saladToolsBtn.style.fontSize = "14px";
+  saladToolsBtn.style.fontWeight = "700";
+  saladToolsBtn.style.cursor = "pointer";
+  saladToolsBtn.style.backgroundColor = "#DBF1C1";
+  saladToolsBtn.style.color = "#0A2133";
+  saladToolsBtn.style.borderRadius = "4px";
+  saladToolsBtn.style.textDecoration = "none";
+  saladToolsBtn.style.display = "inline-flex";
+  saladToolsBtn.style.alignItems = "center";
+  saladToolsBtn.style.transition = "background-color 0.2s ease";
+  saladToolsBtn.onmouseover = () => {
+    saladToolsBtn.style.backgroundColor = "#d0e4ab";
+  };
+  saladToolsBtn.onmouseout = () => {
+    saladToolsBtn.style.backgroundColor = "#DBF1C1";
+  };
+
   // Right container for export and potential future controls
   const rightContainer = document.createElement('div');
   rightContainer.style.display = 'flex';
   rightContainer.style.alignItems = 'center';
+  rightContainer.style.gap = '8px';
+  rightContainer.appendChild(saladToolsBtn);
   rightContainer.appendChild(exportBtn);
 
 
@@ -1157,24 +1202,20 @@ function waitForContainerAndAddButton(retries = 10) {
   }
 }
 
-function sumLastHours(history, hours) {
+function sumLastHours(history, days) {
   if (!history || typeof history !== "object") return 0;
 
   try {
     const entries = Object.entries(history)
-
       .map(([date, value]) => ({
         date: new Date(date),
-
         value: typeof value === "number" ? value : 0,
       }))
-
       .sort((a, b) => b.date - a.date)
-      .slice(0, hours);
+      .slice(0, days);
     return entries.reduce((sum, entry) => sum + entry.value, 0);
   } catch (err) {
-    console.error("Error summing hours:", err);
-
+    console.error("Error summing earnings:", err);
     return 0;
   }
 }
@@ -1311,17 +1352,17 @@ function addEarningsColumnsToTable() {
     // Last 24h, 7d, 30d, Lifetime
     const last24 = document.createElement('td');
     last24.className = 'earningsCell';
-    last24.innerHTML = `<div class="c0119"><div class="c0119 c0121">$${sumLastHours(history,24).toFixed(3)}</div></div>`;
+    last24.innerHTML = `<div class="c0119"><div class="c0119 c0121">$${sumLastHours(history,1).toFixed(3)}</div></div>`;
     tdsByKey['last 24h'] = last24;
 
     const last7 = document.createElement('td');
     last7.className = 'earningsCell';
-    last7.innerHTML = `<div class="c0119"><div class="c0119 c0121">$${sumLastHours(history,168).toFixed(3)}</div></div>`;
+    last7.innerHTML = `<div class="c0119"><div class="c0119 c0121">$${sumLastHours(history,7).toFixed(3)}</div></div>`;
     tdsByKey['last 7d'] = last7;
 
     const last30 = document.createElement('td');
     last30.className = 'earningsCell';
-    last30.innerHTML = `<div class="c0119"><div class="c0119 c0121">$${sumLastHours(history,720).toFixed(3)}</div></div>`;
+    last30.innerHTML = `<div class="c0119"><div class="c0119 c0121">$${sumLastHours(history,30).toFixed(3)}</div></div>`;
     tdsByKey['last 30d'] = last30;
 
     const lifetimeTd = document.createElement('td');
@@ -1699,7 +1740,7 @@ function replaceMachineIdsInTextNodes() {
 }
 
 function updateMachineElements() {
-  if (!machineNames.length) return;
+  if (!machineApiData && !machineNames.length) return;
 
   // Replace machine IDs with custom names in the list elements
 
@@ -1848,7 +1889,7 @@ function replaceMachineIdsInTextNodesSafe() {
 
 // Escape a string for safe use in a regular expression
 function escapeRegExp(string) {
-  return string.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&");
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // Replace old custom names (old->new map) across text nodes. Used when machineNames change and
@@ -2284,31 +2325,15 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (oldName && oldName !== m.customName) replacements[oldName] = m.customName;
     });
 
-    // Apply replacements in text nodes (handles updating already-renamed text)
     if (Object.keys(replacements).length > 0) {
       replaceCustomNamesInTextNodes(replacements);
     }
 
     machineNames = newNames;
-
-    // Try to refresh API data then update UI
-    const updateAfterFetch = () => {
-      try {
-        updateMachineElements();
-        flashPageUpdateNotice();
-      } catch (e) {
-        console.warn('Error updating machine elements after receiving new names:', e);
-      }
-    };
-
-    if (!gpuDemandData) {
-      fetchGpuDemandData().then(() => fetchMachineApiData().then(updateAfterFetch)).catch(err => { console.error(err); updateAfterFetch(); });
-    } else {
-      fetchMachineApiData().then(updateAfterFetch).catch(err => { console.error(err); updateAfterFetch(); });
-    }
-  }
-
-  if (message.action === "getEarningsData") {
+    // Debounced so storage.onChanged firing simultaneously doesn't cause a double fetch
+    scheduleMachineUpdate();
+    flashPageUpdateNotice();
+  } else if (message.action === "getEarningsData") {
     const timeframe = message.timeframe || "30d";
 
     // Build earnings data object from cached data
@@ -2486,12 +2511,8 @@ if (browser && browser.storage && browser.storage.onChanged) {
 
       machineNames = newVal || [];
       console.log('machineNames updated via storage.onChanged:', machineNames);
-
-      if (!gpuDemandData) {
-        fetchGpuDemandData().then(() => fetchMachineApiData().then(() => updateMachineElements()));
-      } else {
-        fetchMachineApiData().then(() => updateMachineElements());
-      }
+      // Debounced so onMessage firing simultaneously doesn't cause a double fetch
+      scheduleMachineUpdate();
     }
   });
 }
@@ -2513,8 +2534,6 @@ try {
 } catch (e) {
   // ignore
 }
-
-init();
 
 // Handle page navigation
 if (document.readyState === "complete") init();

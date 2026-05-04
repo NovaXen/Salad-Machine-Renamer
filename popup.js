@@ -19,6 +19,16 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // ---- Release Notes Setup ----
   const RELEASE_NOTES = {
+    "1.4.5": [
+      "Fixed Last 24h / Last 7d / Last 30d earnings columns showing incorrect values",
+      "Fixed extension init running twice on page load, causing duplicate API calls and accumulating background timers",
+      "Fixed auto-detect treating all saved machines as new every time the popup opened",
+      "Fixed aggregate CSV export crashing when machine data hadn't loaded yet",
+      "Fixed custom machine names containing [ or ] breaking name replacement",
+      "Fixed a race condition where saving from the popup triggered two simultaneous API fetches",
+      "Fixed release notes re-appearing if the popup was closed before the version was saved",
+      "Added GPU Demand & Earnings button linking to salad-tools.novatech.gg"
+    ],
     "1.4.4": [
       "Fixed Salad's broken current earning rate to now show correctly",
       "Columns are now sortable by clicking the column title (toggle low/high)"
@@ -62,6 +72,7 @@ document.addEventListener('DOMContentLoaded', function() {
   
   storageGet(['lastSeenVersion']).then(result => {
     if (result.lastSeenVersion !== currentVersion) {
+      storageSet({ lastSeenVersion: currentVersion }).catch(err => console.error('Failed to set lastSeenVersion:', err));
       if (RELEASE_NOTES[currentVersion]) {
         releaseNotesList.innerHTML = '';
         RELEASE_NOTES[currentVersion].forEach(note => {
@@ -71,7 +82,6 @@ document.addEventListener('DOMContentLoaded', function() {
         });
         releaseNotesDiv.style.display = 'block';
       }
-      storageSet({ lastSeenVersion: currentVersion }).catch(err => console.error('Failed to set lastSeenVersion:', err));
     }
   }).catch(err => {
     console.error('Failed to read lastSeenVersion from storage:', err);
@@ -87,19 +97,15 @@ document.addEventListener('DOMContentLoaded', function() {
     .then(res => res.json())
     .then(data => {
       gpuData = data;
-      loadMachines();
-      // Auto-detect machines after loading
-      performAutoDetect();
+      loadMachines().then(() => performAutoDetect());
     })
     .catch(err => {
       console.error('Failed to fetch GPU demand data:', err);
-      loadMachines();  // Load anyway without GPU dropdowns
-      // Auto-detect machines even if GPU data fails
-      performAutoDetect();
+      loadMachines().then(() => performAutoDetect());
     });
 
   function loadMachines() {
-    storageGet(['machineNames']).then(function(result) {
+    return storageGet(['machineNames']).then(function(result) {
       const savedMachines = result.machineNames || [];
       machineList.innerHTML = '';
 
