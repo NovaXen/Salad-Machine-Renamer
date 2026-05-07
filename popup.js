@@ -19,8 +19,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // ---- Release Notes Setup ----
   const RELEASE_NOTES = {
+    "1.4.6": [
+      "Fixed extension not loading when navigating from Store → Earn (React Router SPA navigation)",
+      "Fixed Emotion CSS class name detection to work dynamically across Salad website updates"
+    ],
     "1.4.5": [
-      "Fixed Last 24h / Last 7d / Last 30d earnings columns showing incorrect values",
       "Fixed extension init running twice on page load, causing duplicate API calls and accumulating background timers",
       "Fixed auto-detect treating all saved machines as new every time the popup opened",
       "Fixed aggregate CSV export crashing when machine data hadn't loaded yet",

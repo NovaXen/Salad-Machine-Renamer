@@ -12,6 +12,43 @@ let earningsHistoryCache = {};
 let lifetimeEarningsCache = {};
 let toggleButtonObserver = null;
 let _machineUpdateTimer = null;
+let _classOffset = null; // null = not yet detected; computed dynamically from the table's Emotion class number
+let _periodicTimersStarted = false;
+
+// Detects the Emotion CSS class offset for the current page render.
+// Salad uses Emotion CSS-in-JS; class numbers shift between page loads and deploys.
+// The machine table is always present on earn/summary — we derive offset from its class.
+function getClassOffset() {
+  if (_classOffset !== null) return _classOffset;
+  const table = document.querySelector('table');
+  if (table) {
+    const tableClass = Array.from(table.classList).find(c => /^c0\d+$/.test(c));
+    if (tableClass) {
+      const tableNum = parseInt(tableClass.slice(2), 10);
+      _classOffset = tableNum - 128; // base table class is c0128
+      return _classOffset;
+    }
+  }
+  // Table not rendered yet — return 0 without caching so we retry next call
+  return 0;
+}
+
+// Transforms a c0NNN class name to the correct variant for the current page load
+function pc(cls) {
+  const offset = getClassOffset();
+  if (offset === 0) return cls;
+  return cls.replace(/\bc0(\d+)\b/g, (_, n) => `c0${parseInt(n, 10) + offset}`);
+}
+
+// querySelector with automatic class variant detection
+function qsel(selector) {
+  return document.querySelector(pc(selector));
+}
+
+// querySelectorAll with automatic class variant detection
+function qselAll(selector) {
+  return document.querySelectorAll(pc(selector));
+}
 
 function scheduleMachineUpdate() {
   if (_machineUpdateTimer) clearTimeout(_machineUpdateTimer);
@@ -39,7 +76,6 @@ async function fetchMachineApiData() {
     });
     const data = await res.json();
     machineApiData = data.items || data;
-    console.log("Machine API data:", machineApiData);
 
     // Store lifetime earnings
 
@@ -137,16 +173,7 @@ async function fetchGpuDemandData() {
 }
 
 function isOnSummaryPage() {
-  return (
-    window.location.pathname.includes("/earn/summary") ||
-    window.location.href.includes("/earn/summary")
-  );
-}
-
-function addDownloadCSVButton() {
-  // This function is no longer needed as the export button is integrated into addViewToggleButton
-  // Keeping it for compatibility in case it's called elsewhere
-  return;
+  return window.location.pathname.includes("/earn/summary");
 }
 
 function openCSVExportModal() {
@@ -432,23 +459,10 @@ function downloadEarningsDataFromPage(machineSelection, timeframe) {
         now.getTime() - 31 * 24 * 60 * 60 * 1000,
       );
 
-      console.log("Looking for unnamed machine:", machineSelection);
-      console.log("machineApiData available:", !!machineApiData);
-      console.log("machineApiData length:", machineApiData?.length);
-
       const unnamedMachine = machineApiData.find((machine) => {
         if (!machine.update_time) return false;
         const updateTime = new Date(machine.update_time);
         const shortId = machine.machine_id.split("-")[0];
-        console.log(
-          "Checking machine:",
-          shortId,
-          "update_time:",
-          updateTime,
-          "matches:",
-          shortId === machineSelection,
-        );
-
         return updateTime >= thirtyOneDaysAgo && shortId === machineSelection;
       });
 
@@ -673,29 +687,33 @@ function downloadCSVFile(csv, filename) {
 }
 
 function injectTableStylesAndResize() {
+  const existing = document.getElementById('smr-styles');
+  if (existing) existing.remove();
   const style = document.createElement("style");
+  style.id = 'smr-styles';
 
+  const T = pc('c0128'), C = pc('c0120'), I = pc('c0119'), IC = pc('c0119') + '.' + pc('c0121'), W = pc('c0118');
   style.textContent = `
-    table.c0128 { width: auto !important; min-width: 1200px !important; table-layout: auto !important; }
-    table.c0128 th, table.c0128 td { white-space: nowrap !important; }
-    table.c0128 th.gpuDemandHeader > div.c0120,
-    table.c0128 th.earningsHeader > div.c0120 {
+    table.${T} { width: auto !important; min-width: 1200px !important; table-layout: auto !important; }
+    table.${T} th, table.${T} td { white-space: nowrap !important; }
+    table.${T} th.gpuDemandHeader > div.${C},
+    table.${T} th.earningsHeader > div.${C} {
       display: flex !important; justify-content: center !important; align-items: center !important; text-align: center !important;
     }
-    table.c0128 td.gpuDemandCell > div.c0119 > div.c0119.c0121,
-    table.c0128 td.earningsCell > div.c0119 > div.c0119.c0121 {
+    table.${T} td.gpuDemandCell > div.${I} > div.${IC},
+    table.${T} td.earningsCell > div.${I} > div.${IC} {
       display: flex !important; justify-content: center !important; align-items: center !important; text-align: center !important;
     }
-    .c0118 > div, .c0118 { width: auto !important; max-width: none !important; }
+    .${W} > div, .${W} { width: auto !important; max-width: none !important; }
     .earningsCell div { justify-content: center !important; }
 
     /* Sortable header styles */
-    table.c0128 th.sortable { cursor: pointer !important; user-select: none !important; }
-    table.c0128 th .c0120 { display: inline-flex !important; align-items: center !important; gap: 6px !important; justify-content: center !important; }
-    table.c0128 .sort-indicator { font-size: 12px; color: #DBF1C1; line-height: 1; width: 1em; text-align: left; }
+    table.${T} th.sortable { cursor: pointer !important; user-select: none !important; }
+    table.${T} th .${C} { display: inline-flex !important; align-items: center !important; gap: 6px !important; justify-content: center !important; }
+    table.${T} .sort-indicator { font-size: 12px; color: #DBF1C1; line-height: 1; width: 1em; text-align: left; }
 
     /* Active-only hidden rows (if using attribute) */
-    table.c0128 tbody tr[hidden-row] { display: none !important; }
+    table.${T} tbody tr[hidden-row] { display: none !important; }
   `; 
 
   // Append style safely: document.head may be null when run at document_start
@@ -712,13 +730,13 @@ function injectTableStylesAndResize() {
 
 function addViewToggleButton() {
   // Only add the toggle button on the summary page or when the main machines table exists
-  if (!isOnSummaryPage() && !document.querySelector('table.c0128')) {
+  if (!isOnSummaryPage() && !qsel('table.c0128')) {
     return;
   }
 
   // Prefer the normal container, otherwise place near the main table
-  let container = document.querySelector(".c0118");
-  const table = document.querySelector('table.c0128');
+  let container = qsel(".c0118");
+  const table = qsel('table.c0128');
 
   if (!container) {
     if (table && table.parentElement) {
@@ -748,7 +766,7 @@ function addViewToggleButton() {
   toggleContainer.style.gap = "10px";
 
   const label = document.createElement("p");
-  label.className = "c0154";
+  label.className = pc("c0154");
   label.textContent = "View Type";
   label.style.margin = "0";
   label.style.fontFamily = "Mallory, sans-serif";
@@ -763,7 +781,7 @@ function addViewToggleButton() {
 
   const earningsBtn = document.createElement("button");
   earningsBtn.className =
-    "c0157 " + (viewMode === "earnings" ? "c0159" : "c0158");
+    pc("c0157") + " " + (viewMode === "earnings" ? pc("c0159") : pc("c0158"));
   earningsBtn.textContent = "Earnings";
   earningsBtn.style.border = "none";
   earningsBtn.style.padding = "6px 12px";
@@ -776,7 +794,7 @@ function addViewToggleButton() {
   earningsBtn.style.fontWeight = "bold";
 
   const demandBtn = document.createElement("button");
-  demandBtn.className = "c0157 " + (viewMode === "demand" ? "c0159" : "c0158");
+  demandBtn.className = pc("c0157") + " " + (viewMode === "demand" ? pc("c0159") : pc("c0158"));
   demandBtn.textContent = "Demand";
   demandBtn.style.border = "none";
   demandBtn.style.padding = "6px 12px";
@@ -802,12 +820,12 @@ function addViewToggleButton() {
 
   function updateToggleStyles() {
     earningsBtn.className =
-      "c0157 " + (viewMode === "earnings" ? "c0159" : "c0158");
+      pc("c0157") + " " + (viewMode === "earnings" ? pc("c0159") : pc("c0158"));
     earningsBtn.style.backgroundColor =
       viewMode === "earnings" ? "#DBF1C1" : "transparent";
     earningsBtn.style.color = viewMode === "earnings" ? "#0A2133" : "#DBF1C1";
     demandBtn.className =
-      "c0157 " + (viewMode === "demand" ? "c0159" : "c0158");
+      pc("c0157") + " " + (viewMode === "demand" ? pc("c0159") : pc("c0158"));
     demandBtn.style.backgroundColor =
       viewMode === "demand" ? "#DBF1C1" : "transparent";
     demandBtn.style.color = viewMode === "demand" ? "#0A2133" : "#DBF1C1";
@@ -890,14 +908,14 @@ function addCopyChartButton() {
   const isFirefox = typeof InstallTrigger !== 'undefined' || navigator.userAgent.includes('Firefox');
   if (isFirefox) return;
   
-  const earningsContainer = document.querySelector(".c0151");
+  const earningsContainer = qsel(".c0151");
   if (!earningsContainer) {
     setTimeout(addCopyChartButton, 500);
     return;
   }
   if (document.getElementById("copyChartButton")) return;
 
-  const controlsContainer = earningsContainer.querySelector(".c0155");
+  const controlsContainer = earningsContainer.querySelector(pc(".c0155"));
   if (!controlsContainer) return;
 
   const copyBtn = document.createElement("button");
@@ -1021,7 +1039,7 @@ function addCopyChartButton() {
         let toggleGroup = null;
         for (const child of Array.from(controlsContainer.children)) {
           try {
-            if (child.querySelector && child.querySelector(".c0154")) {
+            if (child.querySelector && child.querySelector(pc(".c0154"))) {
               toggleGroup = child;
               break;
             }
@@ -1190,19 +1208,7 @@ async function rasterizeSvgsInClone(container) {
   }
 }
 
-function waitForContainerAndAddButton(retries = 10) {
-  const container = document.querySelector(".c0118");
-
-  if (container) {
-    addViewToggleButton();
-  } else if (retries > 0) {
-    setTimeout(() => waitForContainerAndAddButton(retries - 1), 500);
-  } else {
-    console.warn("Container .c0118 not found, button not added.");
-  }
-}
-
-function sumLastHours(history, days) {
+function sumLastHours(history, hours) {
   if (!history || typeof history !== "object") return 0;
 
   try {
@@ -1212,10 +1218,10 @@ function sumLastHours(history, days) {
         value: typeof value === "number" ? value : 0,
       }))
       .sort((a, b) => b.date - a.date)
-      .slice(0, days);
+      .slice(0, hours);
     return entries.reduce((sum, entry) => sum + entry.value, 0);
   } catch (err) {
-    console.error("Error summing earnings:", err);
+    console.error("Error summing hours:", err);
     return 0;
   }
 }
@@ -1227,8 +1233,8 @@ function addEmptyEarningsCells(row) {
 
     td.className = "earningsCell";
     td.innerHTML = `
-      <div class="c0119">
-        <div class="c0119 c0121">N/A</div>
+      <div class="${pc('c0119')}">
+        <div class="${pc('c0119')} ${pc('c0121')}">N/A</div>
       </div>
     `;
     row.appendChild(td);
@@ -1236,7 +1242,7 @@ function addEmptyEarningsCells(row) {
 } 
 
 function addEarningsColumnsToTable() {
-  const table = document.querySelector("table.c0128");
+  const table = qsel("table.c0128");
 
   if (!table) return;
   const theadRow = table.querySelector("thead tr");
@@ -1252,12 +1258,10 @@ function addEarningsColumnsToTable() {
     if (!exists) {
       const th = document.createElement("th");
       th.className = "earningsHeader";
-      th.innerHTML = `<div class="c0120"><span>${text}</span></div>`;
+      th.innerHTML = `<div class="${pc('c0120')}"><span>${text}</span></div>`;
       theadRow.appendChild(th);
     }
   });
-
-  const headerKeys = Array.from(theadRow.cells).map((h) => h.textContent.trim().toLowerCase());
 
   tbodyRows.forEach((row) => {
     // Remove previously injected earnings cells (from prior runs)
@@ -1337,8 +1341,8 @@ function addEarningsColumnsToTable() {
     const currentTd = document.createElement("td");
     currentTd.className = "earningsCell currentEarningCell";
     currentTd.innerHTML = `
-      <div class="c0119">
-        <div class="c0119 c0121">$0.000 / Hour</div>
+      <div class="${pc('c0119')}">
+        <div class="${pc('c0119')} ${pc('c0121')}">$0.000 / Hour</div>
       </div>
     `;
     tdsByKey['current earning rate'] = currentTd;
@@ -1346,28 +1350,28 @@ function addEarningsColumnsToTable() {
     // GPU Name
     const gpuTd = document.createElement('td');
     gpuTd.className = 'earningsCell';
-    gpuTd.innerHTML = `<div class="c0119"><div class="c0119 c0121">${gpuDisplayName}</div></div>`;
+    gpuTd.innerHTML = `<div class="${pc('c0119')}"><div class="${pc('c0119')} ${pc('c0121')}">${gpuDisplayName}</div></div>`;
     tdsByKey['gpu name'] = gpuTd;
 
     // Last 24h, 7d, 30d, Lifetime
     const last24 = document.createElement('td');
     last24.className = 'earningsCell';
-    last24.innerHTML = `<div class="c0119"><div class="c0119 c0121">$${sumLastHours(history,1).toFixed(3)}</div></div>`;
+    last24.innerHTML = `<div class="${pc('c0119')}"><div class="${pc('c0119')} ${pc('c0121')}">$${sumLastHours(history,24).toFixed(3)}</div></div>`;
     tdsByKey['last 24h'] = last24;
 
     const last7 = document.createElement('td');
     last7.className = 'earningsCell';
-    last7.innerHTML = `<div class="c0119"><div class="c0119 c0121">$${sumLastHours(history,7).toFixed(3)}</div></div>`;
+    last7.innerHTML = `<div class="${pc('c0119')}"><div class="${pc('c0119')} ${pc('c0121')}">$${sumLastHours(history,168).toFixed(3)}</div></div>`;
     tdsByKey['last 7d'] = last7;
 
     const last30 = document.createElement('td');
     last30.className = 'earningsCell';
-    last30.innerHTML = `<div class="c0119"><div class="c0119 c0121">$${sumLastHours(history,30).toFixed(3)}</div></div>`;
+    last30.innerHTML = `<div class="${pc('c0119')}"><div class="${pc('c0119')} ${pc('c0121')}">$${sumLastHours(history,720).toFixed(3)}</div></div>`;
     tdsByKey['last 30d'] = last30;
 
     const lifetimeTd = document.createElement('td');
     lifetimeTd.className = 'earningsCell';
-    lifetimeTd.innerHTML = `<div class="c0119"><div class="c0119 c0121">$${lifetime.toFixed(3)}</div></div>`;
+    lifetimeTd.innerHTML = `<div class="${pc('c0119')}"><div class="${pc('c0119')} ${pc('c0121')}">$${lifetime.toFixed(3)}</div></div>`;
     tdsByKey['lifetime'] = lifetimeTd;
 
     // Determine headers and try to find the site's existing 'Current Earning' column index
@@ -1381,7 +1385,7 @@ function addEarningsColumnsToTable() {
       const existingCell = row.cells[currentIdx];
       if (existingCell) {
         existingCell.classList.add('currentEarningCell');
-        existingCell.innerHTML = `<div class="c0119"><div class="c0119 c0121">$0.000 / Hour</div></div>`;
+        existingCell.innerHTML = `<div class="${pc('c0119')}"><div class="${pc('c0119')} ${pc('c0121')}">$0.000 / Hour</div></div>`;
         currentCellRef = existingCell;
       } else {
         // fallback to inserting at that position
@@ -1435,7 +1439,7 @@ function addEarningsColumnsToTable() {
 
 
 function addColumnsToExistingTable() {
-  const table = document.querySelector("table.c0128");
+  const table = qsel("table.c0128");
 
   if (!table) return;
 
@@ -1458,9 +1462,9 @@ function addColumnsToExistingTable() {
     );
     if (!exists) {
       const th = document.createElement("th");
-      th.className = "c0131 gpuDemandHeader";
+      th.className = pc("c0131") + " gpuDemandHeader";
       const divC0120 = document.createElement("div");
-      divC0120.className = "c0120";
+      divC0120.className = pc("c0120");
       const span = document.createElement("span");
       span.className = "css-1la6eeo ei767vo0";
       span.textContent = text;
@@ -1482,11 +1486,11 @@ function addColumnsToExistingTable() {
 
       for (let i = 0; i < 4; i++) {
         const td = document.createElement("td");
-        td.className = "c0131 gpuDemandCell";
+        td.className = pc("c0131") + " gpuDemandCell";
         const divC0119 = document.createElement("div");
-        divC0119.className = "c0119";
+        divC0119.className = pc("c0119");
         const divInner = document.createElement("div");
-        divInner.className = "c0119 c0121";
+        divInner.className = pc("c0119") + " " + pc("c0121");
         divInner.textContent = "N/A";
         divC0119.appendChild(divInner);
         td.appendChild(divC0119);
@@ -1531,8 +1535,8 @@ function addColumnsToExistingTable() {
       const placeholders = {};
       demandHeaders.forEach((text) => {
         const td = document.createElement('td');
-        td.className = 'c0131 gpuDemandCell';
-        td.innerHTML = `<div class="c0119"><div class="c0119 c0121">N/A</div></div>`;
+        td.className = pc('c0131') + ' gpuDemandCell';
+        td.innerHTML = `<div class="${pc('c0119')}"><div class="${pc('c0119')} ${pc('c0121')}">N/A</div></div>`;
         placeholders[text.toLowerCase()] = td;
       });
 
@@ -1570,31 +1574,31 @@ function addColumnsToExistingTable() {
     const tdsByKey = {};
 
     const currentTdDemand = document.createElement('td');
-    currentTdDemand.className = 'c0131 gpuDemandCell currentEarningCell';
-    currentTdDemand.innerHTML = `<div class="c0119"><div class="c0119 c0121">$0.000 / Hour</div></div>`;
+    currentTdDemand.className = pc('c0131') + ' gpuDemandCell currentEarningCell';
+    currentTdDemand.innerHTML = `<div class="${pc('c0119')}"><div class="${pc('c0119')} ${pc('c0121')}">$0.000 / Hour</div></div>`;
     tdsByKey['current earning rate'] = currentTdDemand;
 
     const gpuDisplayName = gpuInfo?.displayName ? gpuInfo.displayName.replace(/^NVIDIA\s+/i, '') : 'N/A';
     const gpuNameTd = document.createElement('td');
-    gpuNameTd.className = 'c0131 gpuDemandCell';
-    gpuNameTd.innerHTML = `<div class="c0119"><div class="c0119 c0121">${gpuDisplayName}</div></div>`;
+    gpuNameTd.className = pc('c0131') + ' gpuDemandCell';
+    gpuNameTd.innerHTML = `<div class="${pc('c0119')}"><div class="${pc('c0119')} ${pc('c0121')}">${gpuDisplayName}</div></div>`;
     tdsByKey['gpu name'] = gpuNameTd;
 
     const demandTd = document.createElement('td');
-    demandTd.className = 'c0131 gpuDemandCell';
+    demandTd.className = pc('c0131') + ' gpuDemandCell';
     const tier = gpuInfo?.demandTierName || 'N/A';
     const util = gpuInfo?.utilizationPct != null ? gpuInfo.utilizationPct + '%' : 'N/A';
-    demandTd.innerHTML = `<div class="c0119"><div class="c0119 c0121" style="white-space: normal">${tier} / ${util}</div></div>`;
+    demandTd.innerHTML = `<div class="${pc('c0119')}"><div class="${pc('c0119')} ${pc('c0121')}" style="white-space: normal">${tier} / ${util}</div></div>`;
     tdsByKey['gpu demand (tier / util %)'] = demandTd;
 
     const avgEarningTd = document.createElement('td');
-    avgEarningTd.className = 'c0131 gpuDemandCell';
-    avgEarningTd.innerHTML = `<div class="c0119"><div class="c0119 c0121">${gpuInfo?.earningRates?.avgEarningRate!=null?`$${gpuInfo.earningRates.avgEarningRate.toFixed(3)}`:'N/A'}</div></div>`;
+    avgEarningTd.className = pc('c0131') + ' gpuDemandCell';
+    avgEarningTd.innerHTML = `<div class="${pc('c0119')}"><div class="${pc('c0119')} ${pc('c0121')}">${gpuInfo?.earningRates?.avgEarningRate!=null?`$${gpuInfo.earningRates.avgEarningRate.toFixed(3)}`:'N/A'}</div></div>`;
     tdsByKey['avg earning rate'] = avgEarningTd;
 
     const top25EarningTd = document.createElement('td');
-    top25EarningTd.className = 'c0131 gpuDemandCell';
-    top25EarningTd.innerHTML = `<div class="c0119"><div class="c0119 c0121">${gpuInfo?.earningRates?.top25PctEarningRate!=null?`$${gpuInfo.earningRates.top25PctEarningRate.toFixed(3)}`:'N/A'}</div></div>`;
+    top25EarningTd.className = pc('c0131') + ' gpuDemandCell';
+    top25EarningTd.innerHTML = `<div class="${pc('c0119')}"><div class="${pc('c0119')} ${pc('c0121')}">${gpuInfo?.earningRates?.top25PctEarningRate!=null?`$${gpuInfo.earningRates.top25PctEarningRate.toFixed(3)}`:'N/A'}</div></div>`;
     tdsByKey['top 25% earning rate'] = top25EarningTd;
 
     const headerOrder = Array.from(theadRow.cells).map(h => h.textContent.trim().toLowerCase());
@@ -1606,7 +1610,7 @@ function addColumnsToExistingTable() {
       const existingCell = row.cells[currentIdx];
       if (existingCell) {
         existingCell.classList.add('currentEarningCell');
-        existingCell.innerHTML = `<div class="c0119"><div class="c0119 c0121">$0.000 / Hour</div></div>`;
+        existingCell.innerHTML = `<div class="${pc('c0119')}"><div class="${pc('c0119')} ${pc('c0121')}">$0.000 / Hour</div></div>`;
         currentCellRef = existingCell;
       } else {
         const insertBeforeCell = row.cells[currentIdx] || null;
@@ -1653,7 +1657,7 @@ function addColumnsToExistingTable() {
 }
 
 function addLegendBelowTable() {
-  const container = document.querySelector(".c0118");
+  const container = qsel(".c0118");
 
   if (!container) return;
 
@@ -1679,63 +1683,6 @@ function addLegendBelowTable() {
 
 
     container.appendChild(legend);
-  }
-}
-
-function replaceMachineIdsInTextNodes() {
-  if (!machineNames.length) return;
-
-  const machineMap = {};
-
-  machineNames.forEach((m) => {
-    machineMap[m.machineId.toLowerCase()] = m.customName;
-  });
-
-  const walker = document.createTreeWalker(
-    document.body,
-
-    NodeFilter.SHOW_TEXT,
-
-    {
-      acceptNode: function (node) {
-        if (
-          node.parentNode &&
-          ["SCRIPT", "STYLE", "TEXTAREA", "INPUT"].includes(
-            node.parentNode.nodeName,
-          )
-        ) {
-          return NodeFilter.FILTER_REJECT;
-        }
-
-        const text = node.textContent.toLowerCase();
-
-        for (const id in machineMap) {
-          if (text.includes(id)) {
-            return NodeFilter.FILTER_ACCEPT;
-          }
-        }
-
-        return NodeFilter.FILTER_REJECT;
-      },
-    },
-
-    false,
-  );
-
-  let node;
-
-  while ((node = walker.nextNode())) {
-    let text = node.textContent;
-
-    for (const id in machineMap) {
-      const regex = new RegExp(`\\b${id}\\b`, "gi");
-
-      text = text.replace(regex, machineMap[id]);
-    }
-
-    if (text !== node.textContent) {
-      node.textContent = text;
-    }
   }
 }
 
@@ -1794,7 +1741,7 @@ function updateMachineElements() {
 
   // Find the table
 
-  const table = document.querySelector("table.c0128");
+  const table = qsel("table.c0128");
 
   if (!table) return;
 
@@ -1930,7 +1877,7 @@ function replaceCustomNamesInTextNodes(replacements) {
 
 // Table sorting and Active-only filter helpers
 function enableTableSorting() {
-  const table = document.querySelector('table.c0128');
+  const table = qsel('table.c0128');
   if (!table) return;
   const theadRow = table.querySelector('thead tr');
   if (!theadRow) return;
@@ -1953,7 +1900,7 @@ function enableTableSorting() {
     ];
     const isSortable = sortableNames.some((name) => text.startsWith(name));
 
-    const innerDiv = th.querySelector('.c0120') || th;
+    const innerDiv = th.querySelector(pc('.c0120')) || th;
 
     if (isSortable) {
       th.classList.add('sortable');
@@ -2008,7 +1955,7 @@ function enableTableSorting() {
 }
 
 function performSort() {
-  const table = document.querySelector('table.c0128');
+  const table = qsel('table.c0128');
   if (!table || !currentSort.column) return;
   const theadRow = table.querySelector('thead tr');
   const tbody = table.querySelector('tbody');
@@ -2139,14 +2086,14 @@ async function updateCurrentEarningForCell(machineFullId, cell) {
 
   // show loading state
   try {
-    cell.querySelector('.c0119.c0121').textContent = 'Loading...';
+    cell.querySelector(pc('.c0119.c0121')).textContent = 'Loading...';
   } catch (e) {}
 
   const value = await fetchCurrentEarningPerHour(machineFullId);
 
   const display = `$${value.toFixed(3)} / Hour`;
   try {
-    cell.querySelector('.c0119.c0121').textContent = display;
+    cell.querySelector(pc('.c0119.c0121')).textContent = display;
   } catch (e) {
     cell.textContent = display;
   }
@@ -2159,7 +2106,7 @@ async function updateCurrentEarningForCell(machineFullId, cell) {
 
 // Iterate visible rows and update current earnings (async)
 function updateCurrentEarnings() {
-  const table = document.querySelector('table.c0128');
+  const table = qsel('table.c0128');
   if (!table) return;
   const tbody = table.querySelector('tbody');
   Array.from(tbody.querySelectorAll('tr')).forEach((row) => {
@@ -2191,13 +2138,13 @@ function updateCurrentEarnings() {
 }
 
 function updateSortIndicators() {
-  const table = document.querySelector('table.c0128');
+  const table = qsel('table.c0128');
   if (!table) return;
   const theadRow = table.querySelector('thead tr');
   Array.from(theadRow.cells).forEach((th) => {
     th.classList.remove('sort-asc', 'sort-desc');
     const key = th.getAttribute('data-sort-key');
-    const innerDiv = th.querySelector('.c0120') || th;
+    const innerDiv = th.querySelector(pc('.c0120')) || th;
     const indicator = innerDiv.querySelector('.sort-indicator');
     if (currentSort.column && key === currentSort.column) {
       th.classList.add(currentSort.direction === 'asc' ? 'sort-asc' : 'sort-desc');
@@ -2219,6 +2166,9 @@ async function init() {
     return;
   }
 
+  // Re-detect class variant on each init (may differ between direct load and SPA navigation)
+  _classOffset = null;
+
   injectTableStylesAndResize();
 
   // Set up observer to maintain buttons
@@ -2230,12 +2180,6 @@ async function init() {
         isOnSummaryPage()
       ) {
         addViewToggleButton();
-      }
-      if (
-        !document.getElementById("csvDownloadContainer") &&
-        isOnSummaryPage()
-      ) {
-        addDownloadCSVButton();
       }
       if (!document.getElementById("copyChartButton") && isOnSummaryPage()) {
         addCopyChartButton();
@@ -2295,27 +2239,25 @@ async function init() {
   await fetchMachineApiData();
   await fetchMachineEarningsHistory();
   addViewToggleButton();
-  addDownloadCSVButton();
   addCopyChartButton();
   updateMachineElements();
 
-  // Keep your existing interval timers here
+  // Staggered initial updates
   [500, 1500, 3000, 5000, 7500].forEach((delay) => {
     setTimeout(() => {
       updateMachineElements();
-
-      if (delay === 7500) setInterval(updateMachineElements, 2000);
+      if (delay === 7500 && !_periodicTimersStarted) {
+        _periodicTimersStarted = true;
+        setInterval(updateMachineElements, 2000);
+        setTimeout(() => { updateCurrentEarnings(); setInterval(updateCurrentEarnings, 60 * 1000); }, 3000);
+      }
     }, delay);
   });
-
-  // Update current earnings periodically (initial refresh after 3s, then every 60s)
-  setTimeout(() => { updateCurrentEarnings(); setInterval(updateCurrentEarnings, 60 * 1000); }, 3000);
 }
 
 browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'updateMachineNames' || message.machineNames) {
     const newNames = message.machineNames || [];
-    console.log('Received updated machineNames message:', newNames);
 
     // Compute mapping of old customName -> new customName for items that changed
     const oldMap = new Map((machineNames || []).map(m => [m.machineId, m.customName]));
@@ -2335,12 +2277,6 @@ browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     flashPageUpdateNotice();
   } else if (message.action === "getEarningsData") {
     const timeframe = message.timeframe || "30d";
-
-    // Build earnings data object from cached data
-
-    const earningsData = {};
-
-    // Fetch the requested timeframe data for all machines
 
     Promise.all(
       (machineApiData || []).map(async (machine) => {
@@ -2510,36 +2446,56 @@ if (browser && browser.storage && browser.storage.onChanged) {
       }
 
       machineNames = newVal || [];
-      console.log('machineNames updated via storage.onChanged:', machineNames);
       // Debounced so onMessage firing simultaneously doesn't cause a double fetch
       scheduleMachineUpdate();
     }
   });
 }
 
-// Also register a chrome.runtime fallback listener for older Chrome contexts
-try {
-  if (window.chrome && chrome.runtime && chrome.runtime.onMessage) {
-    chrome.runtime.onMessage.addListener((msg) => {
-      if (msg && msg.machineNames) {
-        machineNames = msg.machineNames;
-        if (!gpuDemandData) {
-          fetchGpuDemandData().then(() => fetchMachineApiData().then(() => updateMachineElements()));
-        } else {
-          fetchMachineApiData().then(() => updateMachineElements());
-        }
-      }
-    });
+// SPA navigation detection: React Router changes URL without a full page reload.
+let _lastSPAPath = window.location.pathname;
+
+function waitForEarnTableThenInit() {
+  // Wait for Salad's machine table to appear in the DOM before running init().
+  // We look for any <table> since earn/summary has exactly one.
+  if (document.querySelector('table')) {
+    init();
+    return;
   }
-} catch (e) {
-  // ignore
+  const obs = new MutationObserver(() => {
+    if (document.querySelector('table')) {
+      obs.disconnect();
+      init();
+    }
+  });
+  obs.observe(document.body || document.documentElement, { childList: true, subtree: true });
+  // Fallback after 5s in case the table never appears
+  setTimeout(() => { obs.disconnect(); init(); }, 5000);
 }
 
-// Handle page navigation
+function handleSPANavigation() {
+  const currentPath = window.location.pathname;
+  if (currentPath === _lastSPAPath) return;
+  _lastSPAPath = currentPath;
+  if (isOnSummaryPage()) {
+    _classOffset = null; // force re-detect after React renders new content
+    waitForEarnTableThenInit();
+  }
+}
+
+// pushState patching does NOT work from a content script isolated world — React Router
+// runs in the page world and its pushState calls are invisible to us. Instead, we watch
+// the DOM for mutations (which happen during every React Router render) and check if the
+// URL changed to earn/summary on each mutation. document.documentElement is shared.
+const _spaNavObserver = new MutationObserver(handleSPANavigation);
+_spaNavObserver.observe(document.documentElement, { childList: true, subtree: true });
+
+// Handle page navigation (direct loads and refreshes)
 if (document.readyState === "complete") init();
 else document.addEventListener("DOMContentLoaded", init);
 
 // Cleanup when leaving page
 window.addEventListener("beforeunload", () => {
   if (toggleButtonObserver) toggleButtonObserver.disconnect();
+  _spaNavObserver.disconnect();
 });
